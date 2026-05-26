@@ -6,9 +6,9 @@ Point d'entrée du serveur FastMCP v2.0
 import os
 import logging
 from fastmcp import FastMCP
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 
-# Import des tools
+# Imports des tools
 from tools.grok_dispatch import register_dispatch
 from tools.grok_critique import register_critique
 from tools.grok_code_test import register_code_test
@@ -20,11 +20,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("grok-mcp-bridge")
 
-# ── Initialisation FastMCP ────────────────────────────────────────────────────
+# ── Initialisation FastMCP (version compatible) ───────────────────────────────
 mcp = FastMCP(
     name="grok-mcp-bridge",
-    version="2.0.0",
-    description="Production MCP Bridge — Claude ↔ Grok xAI (Taranis Cooperage)",
+    # description n'est pas supporté → on le retire
 )
 
 # ── Enregistrement des tools ──────────────────────────────────────────────────
@@ -32,32 +31,39 @@ register_dispatch(mcp)
 register_critique(mcp)
 register_code_test(mcp)
 register_research(mcp)
-logger.info("All tools registered successfully: grok_dispatch, grok_critique, grok_code_test, grok_research")
+logger.info("All tools registered successfully.")
 
 # ── Ajout d'un endpoint /health (sécurisé) ───────────────────────────────────
-# On récupère l'application FastAPI sous-jacente de manière compatible
-app: FastAPI = mcp.app if hasattr(mcp, "app") else mcp.http_app()
+# Récupération de l'application FastAPI sous-jacente
+if hasattr(mcp, "app"):
+    app: FastAPI = mcp.app
+elif hasattr(mcp, "http_app"):
+    app: FastAPI = mcp.http_app()
+else:
+    app = None
+    logger.warning("Could not find FastAPI app instance for /health endpoint")
 
-@app.get("/health", tags=["monitoring"])
-async def health_check():
-    """Endpoint de santé pour Railway et monitoring."""
-    return {
-        "status": "healthy",
-        "service": "grok-mcp-bridge",
-        "version": "2.0.0",
-        "models": {
-            "fast": os.getenv("GROK_FAST_MODEL", "grok-3-mini"),
-            "smart": os.getenv("GROK_SMART_MODEL", "grok-3"),
-        },
-        "context": "Taranis Cooperage (tonnellerie)",
-    }
+if app:
+    @app.get("/health", tags=["monitoring"])
+    async def health_check():
+        """Endpoint de santé pour Railway et monitoring."""
+        return {
+            "status": "healthy",
+            "service": "grok-mcp-bridge",
+            "version": "2.0.0",
+            "models": {
+                "fast": os.getenv("GROK_FAST_MODEL", "grok-3-mini"),
+                "smart": os.getenv("GROK_SMART_MODEL", "grok-3"),
+            },
+            "context": "Taranis Cooperage Group - Tonnellerie",
+        }
+    logger.info("Health endpoint /health registered")
 
-# ── Lancement du serveur ─────────────────────────────────────────────────────
+# ── Lancement ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     host = os.environ.get("HOST", "0.0.0.0")
     transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
     logger.info(f"Starting Grok MCP Bridge v2.0 on {host}:{port} [{transport}]")
-    logger.info("Endpoint /health available for monitoring")
 
     mcp.run(transport=transport, host=host, port=port)
