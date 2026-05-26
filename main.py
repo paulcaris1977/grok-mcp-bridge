@@ -1,5 +1,6 @@
 """
 Grok MCP Bridge — main.py
+FastMCP 2.14.x — transport streamable-http
 """
 
 import os
@@ -26,5 +27,11 @@ register_research(mcp)
 logger.info("All tools registered.")
 
 if __name__ == "__main__":
-    logger.info("Starting mcp.run()...")
-    mcp.run()
+    port = int(os.environ.get("PORT", 8000))
+    host = os.environ.get("HOST", "0.0.0.0")
+    logger.info(f"Starting on {host}:{port} [streamable-http]")
+    mcp.run(
+        transport="streamable-http",
+        host=host,
+        port=port,
+    )
