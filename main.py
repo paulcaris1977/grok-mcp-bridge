@@ -7,10 +7,12 @@ import os
 import logging
 from fastmcp import FastMCP
 
-from tools.grok_dispatch import register_dispatch
-from tools.grok_critique import register_critique
+from tools.grok_dispatch  import register_dispatch
+from tools.grok_critique  import register_critique
 from tools.grok_code_test import register_code_test
-from tools.grok_research import register_research
+from tools.grok_research  import register_research
+from tools.grok_debate    import register_debate
+from config               import validate_api_keys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,11 +22,16 @@ logger = logging.getLogger("grok-mcp-bridge")
 
 mcp = FastMCP(name="grok-mcp-bridge")
 
+validate_api_keys()
+logger.info("API keys validated ✅")
+
 register_dispatch(mcp)
 register_critique(mcp)
 register_code_test(mcp)
 register_research(mcp)
-logger.info("All tools registered.")
+register_debate(mcp)
+
+logger.info("All tools registered (dispatch, critique, code_test, research, debate).")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
