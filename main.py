@@ -39,12 +39,13 @@ logger.info(
     "All tools registered (dispatch, critique, code_test, research, debate, ask_claude, project_memory)."
 )
 
+# App ASGI exposée au niveau module : Railway démarre via `uvicorn main:app`
+app = mcp.http_app(path="/mcp", transport="streamable-http")
+
 if __name__ == "__main__":
+    import uvicorn
+
     port = int(os.environ.get("PORT", 8000))
     host = os.environ.get("HOST", "0.0.0.0")
     logger.info(f"Starting on {host}:{port} [streamable-http]")
-    mcp.run(
-        transport="streamable-http",
-        host=host,
-        port=port,
-    )
+    uvicorn.run(app, host=host, port=port)
