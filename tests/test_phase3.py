@@ -232,3 +232,12 @@ def test_unwritable_data_dir_falls_back(monkeypatch, tmp_path):
     store.save_note("p", "k", "v", "grok")
     store.db_path().unlink()
     monkeypatch.setattr(store, "_fallback_dir", None)
+
+
+def test_unopenable_database_falls_back(monkeypatch, tmp_path):
+    (tmp_path / "vol" / "bridge.sqlite3").mkdir(parents=True)   # un dossier à la place du fichier
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "vol"))
+    store.init()
+    assert not store.is_persistent()
+    store.db_path().unlink()
+    monkeypatch.setattr(store, "_fallback_dir", None)

@@ -97,13 +97,18 @@ def init() -> None:
     _fallback_dir = None
     try:
         data_dir().mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
+        with connect() as conn:
+            conn.executescript(_SCHEMA)
+    except (OSError, sqlite3.Error) as exc:
         # Ne jamais empêcher le démarrage : repli dans le dossier de l'app (non persistant)
         _fallback_dir = Path(__file__).with_name("data")
-        logger.warning("Dossier de données inaccessible (%s), repli sur %s", exc, _fallback_dir)
-    with connect() as conn:
-        conn.executescript(_SCHEMA)
-    _import_legacy_notes()
+        logger.error("Base inaccessible dans le dossier de données (%s), repli sur %s", exc, _fallback_dir)
+        with connect() as conn:
+            conn.executescript(_SCHEMA)
+    try:
+        _import_legacy_notes()
+    except (OSError, sqlite3.Error) as exc:
+        logger.error("Import de l'ancien fichier de notes impossible : %s", exc)
     interrupted = interrupt_running_jobs()
     purge_old_jobs()
     if is_persistent():
