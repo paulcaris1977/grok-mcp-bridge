@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 from fastmcp import FastMCP
 
-from grok_client import call_grok, get_model_for_task
+from grok_client import call_grok
 from context import build_system_prompt
 
 logger = logging.getLogger("grok-mcp-bridge.code_test")
@@ -76,9 +76,11 @@ def register_code_test(mcp: FastMCP) -> None:
         error_message: Optional[str] = None,
         context: Optional[str] = None,
         session_id: Optional[str] = None,
+        effort: str = "high",
+        model: Optional[str] = None,
     ) -> str:
         """
-        Analyse, debug et correction de code via Grok (modèle grok-3).
+        Analyse, debug et correction de code via Grok.
 
         Spécialisé pour le stack Taranis Cooperage Group :
         Python / FastMCP / Railway / Odoo Online 19 / asyncio.
@@ -96,6 +98,9 @@ def register_code_test(mcp: FastMCP) -> None:
             error_message: Traceback ou message d'erreur associé (optionnel).
             context: Contexte d'usage, ex: 'Railway server.py', 'Odoo webhook MCP'.
             session_id: ID de session pour debugging itératif multi-tours.
+            effort: low | medium | high | max (défaut high). Règle modèle,
+                    profondeur de raisonnement et budget.
+            model: Force un modèle xAI précis (ex. grok-4.7) au lieu du profil.
 
         Returns:
             Rapport complet Grok avec code corrigé et recommandations.
@@ -106,6 +111,8 @@ def register_code_test(mcp: FastMCP) -> None:
             error_message=error_message,
             context=context,
             session_id=session_id,
+            effort=effort,
+            model=model,
         )
 
 
@@ -116,6 +123,8 @@ async def _run_code_test(
     context: Optional[str] = None,
     session_id: Optional[str] = None,
     temperature: float = 0.2,
+    effort: str = "high",
+    model: Optional[str] = None,
 ) -> str:
     """
     Implémentation interne — appelable depuis grok_dispatch (routing auto)
@@ -145,10 +154,8 @@ async def _run_code_test(
     taranis_context = build_system_prompt(task_type="code_test")
     system_prompt = f"{_CODE_SYSTEM_PROMPT}\n\n{taranis_context}"
 
-    model = get_model_for_task("code")
-
     logger.info(
-        f"grok_code_test | model={model} | lang={language} | "
+        f"grok_code_test | effort={effort} | model={model or 'profil'} | lang={language} | "
         f"code_len={len(code)} chars | has_error={bool(error_message)} | "
         f"has_context={bool(context)} | session={session_id or 'none'}"
     )
@@ -158,9 +165,9 @@ async def _run_code_test(
         system_prompt=system_prompt,
         model=model,
         temperature=temperature,
-        max_tokens=4500,
         session_id=session_id,
         use_history=bool(session_id),
+        effort=effort,
     )
 
     logger.info(

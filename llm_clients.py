@@ -1,7 +1,7 @@
 """
 llm_clients.py — Grok-Claude Bridge
-Clients httpx asynchrones dédiés au mode debate bi-directionnel.
-N'interfère PAS avec grok_client.py (SDK openai) utilisé par les tools existants.
+Clients du mode debate bi-directionnel.
+Grok passe par grok_client (client unique, Responses API) ; Claude par httpx direct.
 
 Deux fonctions publiques :
   - grok_chat(messages, **kwargs)   → (content: str, model: str)
@@ -15,8 +15,8 @@ from typing import Any
 
 import httpx
 
+from grok_client import grok_respond
 from config import (
-    XAI_API_KEY, GROK_BASE_URL, GROK_SMART_MODEL,
     ANTHROPIC_API_KEY, CLAUDE_BASE_URL, CLAUDE_MODEL,
     HTTP_TIMEOUT, HTTP_MAX_RETRIES, DEBATE_MAX_TOKENS,
 )
@@ -27,7 +27,7 @@ Message = dict[str, Any]  # {"role": "user"|"assistant"|"system", "content": str
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GROK  —  format OpenAI-compatible (POST /chat/completions)
+# GROK  —  Responses API via grok_client (client unique)
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def grok_chat(
@@ -38,55 +38,20 @@ async def grok_chat(
     temperature: float = 0.7,
 ) -> tuple[str, str]:
     """
-    Appel Grok via API OpenAI-compatible.
+    Appel Grok pour le debate — délègue au client unique (Responses API).
+    Profil "low" (modèle sans raisonnement) : le budget DEBATE_MAX_TOKENS
+    n'est pas consommé par du raisonnement et le débat tient dans DEBATE_TIMEOUT_S.
     Retourne (content, model_used).
     """
-    _model      = model      or GROK_SMART_MODEL
-    _max_tokens = max_tokens or DEBATE_MAX_TOKENS
-
-    payload: dict[str, Any] = {
-        "model":       _model,
-        "messages":    messages,
-        "max_tokens":  _max_tokens,
-        "temperature": temperature,
-    }
-    headers = {
-        "Authorization": f"Bearer {XAI_API_KEY}",
-        "Content-Type":  "application/json",
-    }
-
-    last_exc: Exception | None = None
-    for attempt in range(HTTP_MAX_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-                resp = await client.post(
-                    f"{GROK_BASE_URL}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-
-            choices = data.get("choices", [])
-            if not choices:
-                raise ValueError("Grok: réponse sans 'choices' (vérifiez le modèle et la clé API)")
-
-            content    = choices[0]["message"]["content"]
-            model_used = data.get("model", _model)
-            logger.debug("grok_chat [%s] → %d chars", model_used, len(content))
-            return content, model_used
-
-        except (httpx.TimeoutException, httpx.ConnectError) as exc:
-            last_exc = exc
-            if attempt < HTTP_MAX_RETRIES:
-                logger.warning("grok_chat tentative %d échouée: %s", attempt + 1, exc)
-                continue
-            break
-        except httpx.HTTPStatusError as exc:
-            logger.error("grok_chat HTTP %s: %s", exc.response.status_code, exc.response.text)
-            raise
-
-    raise RuntimeError(f"grok_chat: échec après {HTTP_MAX_RETRIES + 1} tentatives — {last_exc}")
+    result = await grok_respond(
+        messages,
+        effort="low",
+        model=model,
+        temperature=temperature,
+        max_output_tokens=max_tokens or DEBATE_MAX_TOKENS,
+        timeout_s=HTTP_TIMEOUT * (HTTP_MAX_RETRIES + 1),
+    )
+    return result.text, result.model
 
 
 # ══════════════════════════════════════════════════════════════════════════════
