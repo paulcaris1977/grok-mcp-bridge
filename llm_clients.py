@@ -79,6 +79,7 @@ async def claude_chat(
     model: str | None = None,
     max_tokens: int | None = None,
     temperature: float = 0.7,
+    timeout: float | None = None,
 ) -> tuple[str, str]:
     """
     Appel Claude via Anthropic Messages API.
@@ -121,7 +122,7 @@ async def claude_chat(
     last_exc: Exception | None = None
     for attempt in range(HTTP_MAX_RETRIES + 1):
         try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=timeout or HTTP_TIMEOUT) as client:
                 resp = await client.post(
                     f"{CLAUDE_BASE_URL}/messages",
                     json=payload,

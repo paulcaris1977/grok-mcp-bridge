@@ -104,6 +104,7 @@ def build_payload(
     temperature: Optional[float] = None,
     max_output_tokens: Optional[int] = None,
     tools: Optional[list[dict]] = None,
+    text_format: Optional[dict] = None,
 ) -> dict[str, Any]:
     profile = EFFORT_PROFILES[effort]
     selected = model or profile["model"]
@@ -119,6 +120,11 @@ def build_payload(
     if tools:
         payload["tools"] = tools
         payload["max_turns"] = profile["max_turns"]
+    if text_format:
+        payload["text"] = {"format": text_format}
+        if tools:
+            # Les marqueurs [[n]](url) insérés dans le texte casseraient le JSON
+            payload["include"] = ["no_inline_citations"]
     return payload
 
 
@@ -174,12 +180,13 @@ async def grok_respond(
     max_output_tokens: Optional[int] = None,
     tools: Optional[list[dict]] = None,
     timeout_s: Optional[float] = None,
+    text_format: Optional[dict] = None,
 ) -> GrokResult:
     """Appel bas niveau : messages → GrokResult. Relance sur 429 / 5xx / réseau."""
     if not XAI_API_KEY:
         raise ValueError("XAI_API_KEY is not set in environment variables.")
     effort = resolve_effort(effort)
-    payload = build_payload(messages, effort, model, temperature, max_output_tokens, tools)
+    payload = build_payload(messages, effort, model, temperature, max_output_tokens, tools, text_format)
     budget = timeout_s or EFFORT_PROFILES[effort]["timeout_s"]
     deadline = time.monotonic() + budget
     headers = {"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"}
