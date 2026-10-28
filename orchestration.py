@@ -19,7 +19,7 @@ from config import (
 )
 from context import build_system_prompt
 from grok_client import grok_respond, search_tools
-from llm_clients import claude_chat, grok_chat
+from llm_clients import claude_chat, claude_respond, grok_chat
 
 logger = logging.getLogger("grok-mcp-bridge.orchestration")
 
@@ -36,7 +36,12 @@ async def _judge(judge: str, system: str, prompt: str, max_tokens: int = 2000) -
         return result.text, result.model
     return await claude_chat(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        max_tokens=max_tokens, temperature=0.2, timeout=CLAUDE_TIMEOUT_S)
+        max_tokens=max_tokens, effort="medium", timeout=CLAUDE_TIMEOUT_S)
+
+
+def _claude_effort_for(effort: str) -> str:
+    """Effort du bridge (low/medium/high/max) → effort Claude ; low reste low, le reste est plafonné à high."""
+    return "low" if effort == "low" else ("medium" if effort == "medium" else "high")
 
 
 def _check_judge(judge: str) -> str:
@@ -81,18 +86,19 @@ async def run_verify(
     report = grok.render(footer=False)
 
     try:
-        check, claude_model = await claude_chat(
+        claude = await claude_respond(
             [{"role": "system", "content": _VERIFY_SYSTEM},
              {"role": "user", "content": f"RAPPORT À CONTRÔLER :\n\n{report}"}],
-            max_tokens=2500, temperature=0.2, timeout=CLAUDE_TIMEOUT_S)
+            max_tokens=4000, effort="medium", timeout=CLAUDE_TIMEOUT_S)
+        check, claude_footer = claude.text, claude.footer()
     except Exception as exc:
         logger.error("verify: contrôle Claude en échec: %s", exc)
-        check, claude_model = f"⚠️ Contrôle Claude indisponible : {exc}", "—"
+        check, claude_footer = f"⚠️ Contrôle Claude indisponible : {exc}", "—"
 
     return (
         f"# 🔎 Recherche Grok\n\n{report}\n\n"
         f"# ✅ Contrôle Claude\n\n{check}\n\n---\n"
-        f"{grok.footer()} · contrôle `{claude_model}` (coût Claude non compté)"
+        f"Grok {grok.footer()} · contrôle Claude {claude_footer}"
     )
 
 
@@ -124,19 +130,19 @@ async def run_cross_check(
 
     grok_res, claude_res = await asyncio.gather(
         grok_respond(messages, effort=effort, tools=search_tools(sources) if sources else None),
-        claude_chat(messages, max_tokens=2500, temperature=0.3, timeout=CLAUDE_TIMEOUT_S),
+        claude_respond(messages, max_tokens=4000, effort=_claude_effort_for(effort), timeout=CLAUDE_TIMEOUT_S),
         return_exceptions=True,
     )
 
     if isinstance(grok_res, Exception) and isinstance(claude_res, Exception):
         return f"❌ Les deux appels ont échoué.\nGrok : {grok_res}\nClaude : {claude_res}"
     if isinstance(grok_res, Exception):
-        return f"⚠️ Grok en échec ({grok_res}) — réponse de Claude seule :\n\n{claude_res[0]}"
+        return f"⚠️ Grok en échec ({grok_res}) — réponse de Claude seule :\n\n{claude_res.text}"
     if isinstance(claude_res, Exception):
         return f"⚠️ Claude en échec ({claude_res}) — réponse de Grok seule :\n\n{grok_res.render()}"
 
     grok_text = grok_res.render(footer=False)
-    claude_text, claude_model = claude_res
+    claude_text, claude_model = claude_res.text, claude_res.model
     comparison, judge_model = await _judge(
         judge, _COMPARE_SYSTEM,
         f"QUESTION :\n{question}\n\n=== A (Grok) ===\n{grok_text}\n\n=== B (Claude) ===\n{claude_text}")
@@ -146,7 +152,7 @@ async def run_cross_check(
         f"**Arbitre :** {judge} (`{judge_model}`)\n\n{comparison}\n\n---\n\n"
         f"<details><summary>Réponse Grok</summary>\n\n{grok_text}\n\n</details>\n\n"
         f"<details><summary>Réponse Claude (`{claude_model}`)</summary>\n\n{claude_text}\n\n</details>\n\n"
-        f"---\n{grok_res.footer()} · Claude `{claude_model}` (coût non compté)"
+        f"---\nGrok {grok_res.footer()} · Claude {claude_res.footer()}"
     )
 
 
@@ -225,7 +231,7 @@ async def run_debate(
                 grok_chat(_truncate_messages(grok_msgs, DEBATE_HISTORY_KEEP),
                           temperature=temperature, max_tokens=DEBATE_MAX_TOKENS),
                 claude_chat(_truncate_messages(claude_msgs, DEBATE_HISTORY_KEEP),
-                            temperature=temperature, max_tokens=DEBATE_MAX_TOKENS),
+                            max_tokens=DEBATE_MAX_TOKENS),
                 return_exceptions=True)
             for name, res in (("Grok", g), ("Claude", c)):
                 if isinstance(res, Exception):
