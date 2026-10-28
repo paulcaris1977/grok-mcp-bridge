@@ -1,139 +1,260 @@
 """
 grok_client.py
-Client centralisé pour Grok (xAI) avec retry, quota management et historique.
+Client unique pour Grok (xAI), via la Responses API (POST /v1/responses).
+
+- Profils d'effort (config.EFFORT_PROFILES) : modèle, reasoning.effort, budget,
+  tours d'outils, timeout.
+- Outils serveur xAI (web_search, x_search) : la recherche est faite par xAI,
+  les citations reviennent dans la réponse.
+- Chaque réponse peut se terminer par une ligne de coût estimé.
 """
 
+from __future__ import annotations
+
+import asyncio
+import logging
 import os
 import time
-import logging
-import asyncio
-from typing import Optional, Dict, Any
-from openai import AsyncOpenAI, RateLimitError, APIStatusError, APIConnectionError
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+import httpx
+
+import store
+
+from config import (
+    XAI_API_KEY, GROK_BASE_URL,
+    EFFORT_PROFILES, DEFAULT_EFFORT, EFFORT_CAPABLE_MODELS, REASONING_MODELS,
+    GROK_PRICES, GROK_TOOL_CALL_PRICE,
+)
 
 logger = logging.getLogger("grok-mcp-bridge.client")
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-GROK_API_KEY = os.environ.get("XAI_API_KEY", "")
-GROK_BASE_URL = os.environ.get("GROK_BASE_URL", "https://api.x.ai/v1")
-
-DEFAULT_MODEL = os.environ.get("GROK_MODEL", "grok-3-mini")
-FAST_MODEL = os.environ.get("GROK_FAST_MODEL", "grok-3-mini")
-SMART_MODEL = os.environ.get("GROK_SMART_MODEL", "grok-3")
-
-MAX_TOKENS = int(os.environ.get("GROK_MAX_TOKENS", "8192"))
-MAX_RETRIES = int(os.environ.get("GROK_MAX_RETRIES", "4"))
-RETRY_BASE_S = float(os.environ.get("GROK_RETRY_BASE_S", "1.8"))
-CALL_TIMEOUT_S = float(os.environ.get("GROK_CALL_TIMEOUT_S", "25.0"))
-
-# Historique par session
-_history: Dict[str, list[dict]] = {}
+MAX_RETRIES = int(os.environ.get("GROK_MAX_RETRIES", "1"))   # 1 retry = 2 tentatives max
 
 
-def _get_client() -> AsyncOpenAI:
-    if not GROK_API_KEY:
+Message = dict[str, Any]
+
+
+@dataclass
+class GrokResult:
+    text: str
+    model: str
+    effort: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    tool_calls: dict[str, int] = field(default_factory=dict)
+    citations: list[str] = field(default_factory=list)
+
+    @property
+    def cost_usd(self) -> Optional[float]:
+        price = GROK_PRICES.get(self.model)
+        if not price:
+            return None
+        tokens = (self.input_tokens * price[0] + self.output_tokens * price[1]) / 1_000_000
+        return tokens + sum(self.tool_calls.values()) * GROK_TOOL_CALL_PRICE
+
+    def footer(self) -> str:
+        parts = [self.model, f"effort {self.effort}",
+                 f"{self.input_tokens:,} → {self.output_tokens:,} tokens".replace(",", " ")]
+        if self.reasoning_tokens:
+            parts[-1] += f" (dont {self.reasoning_tokens:,} de raisonnement)".replace(",", " ")
+        for name, count in self.tool_calls.items():
+            parts.append(f"{name} ×{count}")
+        cost = self.cost_usd
+        parts.append(f"≈ {cost:.3f} $" if cost is not None else "coût inconnu")
+        return "`" + " · ".join(parts) + "`"
+
+    def render(self, footer: bool = True) -> str:
+        out = self.text
+        if self.citations:
+            out += "\n\n**Sources**\n" + "\n".join(
+                f"{i}. {url}" for i, url in enumerate(self.citations, 1))
+        if footer:
+            out += "\n\n---\n" + self.footer()
+        return out
+
+
+def resolve_effort(effort: Optional[str]) -> str:
+    effort = (effort or DEFAULT_EFFORT).strip().lower()
+    if effort not in EFFORT_PROFILES:
+        raise ValueError(f"effort inconnu '{effort}' (valeurs : {', '.join(EFFORT_PROFILES)})")
+    return effort
+
+
+def search_tools(sources: str = "web+x") -> list[dict]:
+    """Outils serveur xAI pour une recherche. sources : 'web', 'x' ou 'web+x'."""
+    wanted = {s.strip() for s in sources.lower().split("+")}
+    tools = []
+    if "web" in wanted:
+        tools.append({"type": "web_search"})
+    if "x" in wanted:
+        tools.append({"type": "x_search"})
+    if not tools:
+        raise ValueError(f"sources inconnues '{sources}' (valeurs : web, x, web+x)")
+    return tools
+
+
+def build_payload(
+    messages: list[Message],
+    effort: str,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_output_tokens: Optional[int] = None,
+    tools: Optional[list[dict]] = None,
+    text_format: Optional[dict] = None,
+    store: Optional[bool] = None,
+) -> dict[str, Any]:
+    profile = EFFORT_PROFILES[effort]
+    selected = model or profile["model"]
+    payload: dict[str, Any] = {
+        "model": selected,
+        "input": messages,
+        "max_output_tokens": max_output_tokens or profile["max_output_tokens"],
+    }
+    if profile["reasoning"] and selected in EFFORT_CAPABLE_MODELS:
+        payload["reasoning"] = {"effort": profile["reasoning"]}
+    if temperature is not None and selected not in REASONING_MODELS:
+        payload["temperature"] = temperature
+    if tools:
+        payload["tools"] = tools
+        payload["max_turns"] = profile["max_turns"]
+    if text_format:
+        payload["text"] = {"format": text_format}
+        if tools:
+            # Les marqueurs [[n]](url) insérés dans le texte casseraient le JSON
+            payload["include"] = ["no_inline_citations"]
+    if store is not None:
+        # Doc xAI : le stockage côté serveur peut faire échouer les requêtes avec images
+        payload["store"] = store
+    return payload
+
+
+def parse_response(data: dict[str, Any], effort: str, requested_model: str) -> GrokResult:
+    texts: list[str] = []
+    citations: list[str] = []
+    tool_calls: dict[str, int] = {}
+
+    for item in data.get("output", []) or []:
+        kind = item.get("type", "")
+        if kind == "message":
+            for block in item.get("content", []) or []:
+                if block.get("type") == "output_text":
+                    texts.append(block.get("text", ""))
+                    for ann in block.get("annotations", []) or []:
+                        url = ann.get("url")
+                        if ann.get("type") == "url_citation" and url and url not in citations:
+                            citations.append(url)
+        elif kind.endswith("_call"):
+            name = kind[: -len("_call")]
+            tool_calls[name] = tool_calls.get(name, 0) + 1
+
+    for url in data.get("citations", []) or []:
+        if isinstance(url, str) and url not in citations:
+            citations.append(url)
+
+    usage = data.get("usage", {}) or {}
+    details = usage.get("output_tokens_details", {}) or {}
+    text = "\n\n".join(t for t in texts if t).strip()
+    if not text:
+        raise RuntimeError(
+            f"Grok: réponse sans texte (status={data.get('status')}, "
+            f"incomplete={data.get('incomplete_details')})")
+
+    return GrokResult(
+        text=text,
+        model=data.get("model", requested_model),
+        effort=effort,
+        input_tokens=int(usage.get("input_tokens", 0) or 0),
+        output_tokens=int(usage.get("output_tokens", 0) or 0),
+        reasoning_tokens=int(details.get("reasoning_tokens", 0) or 0),
+        tool_calls=tool_calls,
+        citations=citations,
+    )
+
+
+async def grok_respond(
+    messages: list[Message],
+    *,
+    effort: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_output_tokens: Optional[int] = None,
+    tools: Optional[list[dict]] = None,
+    timeout_s: Optional[float] = None,
+    text_format: Optional[dict] = None,
+    store: Optional[bool] = None,
+) -> GrokResult:
+    """Appel bas niveau : messages → GrokResult. Relance sur 429 / 5xx / réseau."""
+    if not XAI_API_KEY:
         raise ValueError("XAI_API_KEY is not set in environment variables.")
-    return AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_BASE_URL)
+    effort = resolve_effort(effort)
+    payload = build_payload(messages, effort, model, temperature, max_output_tokens, tools, text_format, store)
+    budget = timeout_s or EFFORT_PROFILES[effort]["timeout_s"]
+    deadline = time.monotonic() + budget
+    headers = {"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"}
+
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 1:
+            break
+        logger.info("[%s] effort=%s attempt=%d tools=%s budget=%.0fs",
+                    payload["model"], effort, attempt,
+                    [t["type"] for t in tools or []], remaining)
+        try:
+            async with httpx.AsyncClient(timeout=remaining) as client:
+                resp = await client.post(f"{GROK_BASE_URL}/responses", json=payload, headers=headers)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                last_exc = RuntimeError(f"Grok HTTP {resp.status_code}: {resp.text[:300]}")
+                logger.warning("%s", last_exc)
+                await asyncio.sleep(min(2.0 * attempt, max(deadline - time.monotonic() - 1, 0)))
+                continue
+            if resp.status_code >= 400:
+                raise RuntimeError(f"Grok HTTP {resp.status_code}: {resp.text[:500]}")
+            result = parse_response(resp.json(), effort, payload["model"])
+            logger.info("[%s] ✓ %s", result.model, result.footer())
+            return result
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            last_exc = exc
+            logger.warning("Grok réseau/timeout (attempt %d): %s", attempt, exc)
+
+    raise RuntimeError(f"Grok: échec dans le budget de {budget:.0f}s — {last_exc}")
 
 
 async def call_grok(
     prompt: str,
     system_prompt: str = "",
     model: Optional[str] = None,
-    temperature: float = 0.7,
+    temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     session_id: Optional[str] = None,
     use_history: bool = False,
+    effort: Optional[str] = None,
+    tools: Optional[list[dict]] = None,
+    footer: bool = True,
 ) -> str:
-    """
-    Appel principal à Grok avec retry exponentiel et robustesse.
-    """
-    selected_model = model or DEFAULT_MODEL
-    client = _get_client()
-    max_tokens = max_tokens or MAX_TOKENS
-
-    # Construction des messages
-    messages: list[dict] = []
+    """Appel haut niveau utilisé par les tools : prompt → texte + sources + ligne de coût."""
+    messages: list[Message] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-
-    if use_history and session_id and session_id in _history:
-        messages.extend(_history[session_id])
-
+    if use_history and session_id:
+        messages.extend(store.get_history(session_id))
     messages.append({"role": "user", "content": prompt})
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logger.info(f"[{selected_model}] attempt={attempt}/{MAX_RETRIES} | "
-                       f"model={selected_model} | tokens={max_tokens}")
+    result = await grok_respond(
+        messages, effort=effort, model=model, temperature=temperature,
+        max_output_tokens=max_tokens, tools=tools)
 
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=selected_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                ),
-                timeout=CALL_TIMEOUT_S,
-            )
-            content = response.choices[0].message.content or ""
+    if use_history and session_id:
+        store.append_history(session_id, [{"role": "user", "content": prompt},
+                                          {"role": "assistant", "content": result.text}])
 
-            # Mise à jour historique (seulement en cas de succès)
-            if use_history and session_id:
-                if session_id not in _history:
-                    _history[session_id] = []
-                _history[session_id].append({"role": "user", "content": prompt})
-                _history[session_id].append({"role": "assistant", "content": content})
-
-                # Limite intelligente
-                if len(_history[session_id]) > 30:
-                    _history[session_id] = _history[session_id][-30:]
-
-            logger.info(f"[{selected_model}] ✓ Success — {len(content)} chars")
-            return content
-
-        except RateLimitError as e:
-            wait = RETRY_BASE_S * (2 ** (attempt - 1))
-            logger.warning(f"Rate limit → waiting {wait:.1f}s (attempt {attempt})")
-            if attempt == MAX_RETRIES:
-                raise RuntimeError(f"Grok rate limit exceeded after {MAX_RETRIES} retries") from e
-            await asyncio.sleep(wait)
-
-        except asyncio.TimeoutError:
-            logger.warning(f"Grok timeout after {CALL_TIMEOUT_S}s (attempt {attempt}/{MAX_RETRIES})")
-            if attempt == MAX_RETRIES:
-                raise RuntimeError(f"Grok API timeout after {CALL_TIMEOUT_S}s — no response received")
-            await asyncio.sleep(1.5)
-
-        except (APIStatusError, APIConnectionError) as e:
-            logger.error(f"Grok API error [{getattr(e, 'status_code', 'N/A')}]: {e}")
-            if attempt == MAX_RETRIES:
-                raise
-            await asyncio.sleep(1.5)
-
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}", exc_info=True)
-            if attempt == MAX_RETRIES:
-                raise
-            await asyncio.sleep(2)
-
-    raise RuntimeError("Failed to get response from Grok after all retries")
+    return result.render(footer=footer)
 
 
 def clear_history(session_id: str) -> None:
     """Vide l'historique d'une session."""
-    _history.pop(session_id, None)
+    store.clear_history(session_id)
     logger.info(f"History cleared for session={session_id}")
-
-
-def get_model_for_task(task_type: str) -> str:
-    """Retourne le meilleur modèle selon le type de tâche."""
-    mapping = {
-        "fast": FAST_MODEL,
-        "dispatch": FAST_MODEL,
-        "critique": SMART_MODEL,
-        "code": SMART_MODEL,
-        "research": SMART_MODEL,
-        "x_analysis": SMART_MODEL,
-        "raw": SMART_MODEL,
-    }
-    return mapping.get(task_type, DEFAULT_MODEL)

@@ -7,7 +7,7 @@ import logging
 from typing import Optional
 from fastmcp import FastMCP
 
-from grok_client import call_grok, get_model_for_task
+from grok_client import call_grok
 from context import build_system_prompt
 
 logger = logging.getLogger("grok-mcp-bridge.critique")
@@ -21,7 +21,11 @@ SUJET / CONTENU À ANALYSER :
 
 {focus_instruction}
 
-**RÉPONDS EXCLUSIVEMENT avec cette structure :**
+Règles prioritaires sur la structure ci-dessous :
+- Si la demande fixe une longueur ou un nombre de points, respecte-la : réduis ou supprime des rubriques.
+- Critique ce qui est écrit, pas ce que tu supposes : n'attribue au contenu aucun élément qu'il ne contient pas.
+
+**Structure par défaut :**
 
 ## 🔍 Synthèse
 (Résumé court de ce qui est analysé)
@@ -57,6 +61,8 @@ def register_critique(mcp: FastMCP) -> None:
         content: str,
         focus: Optional[str] = None,
         session_id: Optional[str] = None,
+        effort: str = "medium",
+        model: Optional[str] = None,
     ) -> str:
         """
         Analyse critique approfondie.
@@ -65,8 +71,11 @@ def register_critique(mcp: FastMCP) -> None:
             content: Code, document, stratégie ou idée à critiquer
             focus: Angle spécifique (sécurité, performance, risque commercial, etc.)
             session_id: Pour analyses itératives
+            effort: low | medium | high | max (défaut medium)
+            model: Force un modèle xAI précis (ex. grok-4.7) au lieu du profil
         """
-        return await _run_critique(content, focus=focus, session_id=session_id)
+        return await _run_critique(content, focus=focus, session_id=session_id,
+                                   effort=effort, model=model)
 
 
 async def _run_critique(
@@ -74,6 +83,8 @@ async def _run_critique(
     focus: Optional[str] = None,
     session_id: Optional[str] = None,
     temperature: float = 0.35,
+    effort: str = "medium",
+    model: Optional[str] = None,
 ) -> str:
     """Implémentation interne."""
 
@@ -89,10 +100,8 @@ async def _run_critique(
         focus_instruction=focus_instruction
     )
 
-    model = get_model_for_task("critique")
-
     logger.info(
-        f"grok_critique → model={model} | focus={focus or 'general'} | "
+        f"grok_critique → effort={effort} | model={model or 'profil'} | focus={focus or 'general'} | "
         f"content_length={len(content)} | session={session_id or 'none'}"
     )
 
@@ -102,9 +111,9 @@ async def _run_critique(
             system_prompt=system_prompt,
             model=model,
             temperature=temperature,
-            max_tokens=3500,
             session_id=session_id,
             use_history=bool(session_id),
+            effort=effort,
         )
     except Exception as e:
         logger.error(f"Error in grok_critique: {e}", exc_info=True)
