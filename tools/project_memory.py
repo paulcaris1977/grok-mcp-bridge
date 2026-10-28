@@ -46,7 +46,7 @@ def register_project_memory(mcp: FastMCP) -> None:
         name="save_project_note",
         description=(
             "Enregistre une note de projet partagée, lisible ensuite par ask_claude et get_project_notes. "
-            "Utiliser pour déposer le contexte Nalmaia (prix, segments, réserves) avant une question à Claude."
+            "Utiliser pour déposer le contexte d'un projet (prix, segments, réserves) avant une question à Claude."
         ),
     )
     async def save_project_note(

@@ -12,6 +12,7 @@ import orchestration
 import tools.grok_dispatch as dispatch_mod
 import tools.grok_structured as structured_mod
 from grok_client import GrokResult, build_payload, search_tools
+from llm_clients import ClaudeResult
 from router.router import Mode, resolve_mode
 from tools.grok_structured import register_structured, schema_format
 from tools.grok_x_pulse import x_search_tool
@@ -58,6 +59,10 @@ async def test_unknown_mode_is_reported():
 
 # ── fakes ─────────────────────────────────────────────────────────────────────
 
+def _claude(text, model="claude-sonnet-5-5"):
+    return ClaudeResult(text=text, model=model, effort="medium", input_tokens=1000, output_tokens=200)
+
+
 def _grok(text="Réponse Grok [[1]](https://a.example)", citations=("https://a.example",)):
     return GrokResult(text=text, model="grok-4.7", effort="medium",
                       input_tokens=100, output_tokens=50, citations=list(citations))
@@ -75,14 +80,15 @@ async def test_verify_chains_grok_search_then_claude(monkeypatch):
 
     async def fake_claude(messages, **kw):
         seen["claude_input"] = messages[-1]["content"]
-        return "| 1 | … | [1] | ✅ | ok |\nFiabilité globale : 4/5", "claude-test"
+        return _claude("| 1 | … | [1] | ✅ | ok |\nFiabilité globale : 4/5")
 
     monkeypatch.setattr(orchestration, "grok_respond", fake_grok)
-    monkeypatch.setattr(orchestration, "claude_chat", fake_claude)
+    monkeypatch.setattr(orchestration, "claude_respond", fake_claude)
     out = await orchestration.run_verify("prix fûts Japon", sources="web")
     assert seen["tools"] == [{"type": "web_search"}]
     assert "https://a.example" in seen["claude_input"]      # Claude voit les sources
     assert "# 🔎 Recherche Grok" in out and "Fiabilité globale : 4/5" in out
+    assert "claude-sonnet-5-5 · effort medium" in out and "≈ 0.004 $" in out   # coût Claude affiché
 
 
 @pytest.mark.asyncio
@@ -94,7 +100,7 @@ async def test_verify_survives_claude_failure(monkeypatch):
         raise RuntimeError("anthropic down")
 
     monkeypatch.setattr(orchestration, "grok_respond", fake_grok)
-    monkeypatch.setattr(orchestration, "claude_chat", boom)
+    monkeypatch.setattr(orchestration, "claude_respond", boom)
     out = await orchestration.run_verify("x")
     assert "Réponse Grok" in out and "Contrôle Claude indisponible" in out
 
@@ -109,14 +115,16 @@ async def test_cross_check_compares_both(monkeypatch):
         assert kw["tools"] is None          # pas de recherche sans sources
         return _grok("A dit oui", ())
 
-    async def fake_claude(messages, **kw):
+    async def fake_judge(messages, **kw):
         prompts.append(messages[-1]["content"])
-        if "=== A (Grok) ===" in messages[-1]["content"]:
-            return "## Accords\n…", "claude-judge"
-        return "B dit non", "claude-test"
+        return "## Accords\n…", "claude-judge"
+
+    async def fake_claude(messages, **kw):
+        return _claude("B dit non")
 
     monkeypatch.setattr(orchestration, "grok_respond", fake_grok)
-    monkeypatch.setattr(orchestration, "claude_chat", fake_claude)
+    monkeypatch.setattr(orchestration, "claude_respond", fake_claude)
+    monkeypatch.setattr(orchestration, "claude_chat", fake_judge)
     out = await orchestration.run_cross_check("Faut-il aller en Inde ?")
     assert "A dit oui" in prompts[-1] and "B dit non" in prompts[-1]
     assert "## Accords" in out and "claude-judge" in out
@@ -128,10 +136,10 @@ async def test_cross_check_one_side_down(monkeypatch):
         raise RuntimeError("xai down")
 
     async def fake_claude(messages, **kw):
-        return "B seule", "claude-test"
+        return _claude("B seule")
 
     monkeypatch.setattr(orchestration, "grok_respond", fake_grok)
-    monkeypatch.setattr(orchestration, "claude_chat", fake_claude)
+    monkeypatch.setattr(orchestration, "claude_respond", fake_claude)
     out = await orchestration.run_cross_check("q")
     assert out.startswith("⚠️ Grok en échec") and "B seule" in out
 

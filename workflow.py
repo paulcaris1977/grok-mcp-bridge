@@ -5,6 +5,7 @@ Chaîne générique d'étapes Grok / Claude, décrite en JSON.
 steps = liste d'étapes ; un élément peut aussi être une liste d'étapes lancées en parallèle.
 Étape : {"id": "marche", "agent": "grok" | "claude", "prompt": "... {{input}} ... {{autre_id}} ...",
          "effort": "medium", "sources": "web", "schema": {...}, "max_tokens": 2000}
+sources = Grok seulement ; schema et effort valent pour les deux agents.
 {{input}} = l'entrée du workflow ; {{id}} = la sortie d'une étape d'un groupe précédent.
 """
 
@@ -19,13 +20,13 @@ from typing import Any, Awaitable, Callable, Optional, Union
 
 from context import build_system_prompt
 from grok_client import grok_respond, resolve_effort, search_tools
-from llm_clients import claude_chat
+from llm_clients import claude_effort, claude_respond, claude_schema
 
 logger = logging.getLogger("grok-mcp-bridge.workflow")
 
 MAX_STEPS = 8
 MAX_PARALLEL = 4
-CLAUDE_TIMEOUT_S = 120.0
+CLAUDE_TIMEOUT_S = 180.0
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _REF_RE = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
 _STEP_KEYS = {"id", "agent", "prompt", "effort", "sources", "schema", "max_tokens"}
@@ -60,7 +61,7 @@ class WorkflowResult:
     error: str = ""
 
     @property
-    def grok_cost(self) -> float:
+    def cost_usd(self) -> float:
         return sum(o.cost_usd or 0.0 for o in self.outputs)
 
 
@@ -105,8 +106,12 @@ def parse_steps(raw: Union[str, list]) -> list[list[Step]]:
                 step.effort = resolve_effort(step.effort)
                 if step.sources:
                     search_tools(step.sources)
-            elif step.sources or step.schema:
-                raise ValueError(f"étape {step.id} : sources et schema sont réservés à Grok")
+            else:
+                if step.sources:
+                    raise ValueError(f"étape {step.id} : sources est réservé à Grok (Claude n'a pas de recherche ici)")
+                step.effort = claude_effort(step.effort)
+                if step.schema:
+                    claude_schema(step.schema)
             group.append(step)
         known |= {s.id for s in group}
         total += len(group)
@@ -127,9 +132,9 @@ async def _run_step(step: Step, values: dict[str, str]) -> StepOutput:
     messages = [{"role": "system", "content": build_system_prompt(task_type="dispatch")},
                 {"role": "user", "content": prompt}]
     if step.agent == "claude":
-        text, model = await claude_chat(messages, max_tokens=step.max_tokens or 2500,
-                                        temperature=0.3, timeout=CLAUDE_TIMEOUT_S)
-        return StepOutput(step.id, "claude", text, model)
+        result = await claude_respond(messages, max_tokens=step.max_tokens or 6000, effort=step.effort,
+                                      schema=step.schema, timeout=CLAUDE_TIMEOUT_S)
+        return StepOutput(step.id, "claude", result.text, result.model, result.footer(), result.cost_usd)
     result = await grok_respond(
         messages, effort=step.effort, max_output_tokens=step.max_tokens,
         tools=search_tools(step.sources) if step.sources else None,
@@ -177,7 +182,7 @@ def format_workflow(result: WorkflowResult) -> str:
         lines.append(f"\n## Résultat ({last.id}, {last.agent})\n\n{last.text}")
         lines.append("\n---\n\n## Étapes")
         for o in result.outputs:
-            meta = o.footer or f"`{o.model}` (coût Claude non compté)"
+            meta = o.footer or f"`{o.model}`"
             lines.append(f"\n<details><summary>{o.id} — {o.agent}</summary>\n\n{o.text}\n\n{meta}\n\n</details>")
-    lines.append(f"\n---\nCoût Grok estimé ≈ {result.grok_cost:.3f} $ (Claude non compté)")
+    lines.append(f"\n---\nCoût estimé Grok + Claude ≈ {result.cost_usd:.3f} $")
     return "\n".join(lines)

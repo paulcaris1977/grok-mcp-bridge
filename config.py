@@ -49,7 +49,24 @@ GROK_TOOL_CALL_PRICE = 0.005   # $5 / 1 000 appels web_search ; x_search est fac
 # ── Claude (Anthropic) — NOUVEAU pour le mode debate ─────────────────────────
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_BASE_URL   = os.environ.get("CLAUDE_BASE_URL", "https://api.anthropic.com/v1")
-CLAUDE_MODEL      = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+CLAUDE_MODEL      = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+# output_config.effort (thinking adaptatif) ; Sonnet 5.5 refuse temperature ≠ défaut, on ne l'envoie plus
+CLAUDE_EFFORTS        = ("low", "medium", "high", "xhigh", "max")
+CLAUDE_DEFAULT_EFFORT = os.environ.get("CLAUDE_DEFAULT_EFFORT", "medium")
+# Repli serveur en cas de refus (fallbacks "default") — seulement sur les modèles qui l'acceptent
+CLAUDE_FALLBACK_MODELS = {m.strip() for m in os.environ.get(
+    "CLAUDE_FALLBACK_MODELS", "claude-sonnet-5-5,claude-opus-5-5,claude-opus-5,claude-fable-5-1").split(",") if m.strip()}
+# Prix en $ par million de tokens (entrée, sortie) — docs Anthropic, oct. 2026. Estimation, pas facturation.
+CLAUDE_PRICES: dict[str, tuple[float, float]] = {
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-opus-5": (5.00, 25.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-fable-5-1": (10.00, 50.00),
+}
 
 # ── Debate ────────────────────────────────────────────────────────────────────
 DEBATE_MAX_TURNS      = int(os.environ.get("DEBATE_MAX_TURNS", "2"))       # réduit à 2 (Railway timeout)

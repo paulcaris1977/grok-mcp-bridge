@@ -15,6 +15,7 @@ import store
 import workflow as wf_mod
 import tools.grok_vision as vision_mod
 from grok_client import GrokResult, build_payload
+from llm_clients import ClaudeResult
 from tools.grok_jobs import register_jobs
 from tools.grok_vision import image_blocks, register_vision
 from tools.project_memory import register_project_memory
@@ -146,7 +147,9 @@ def test_parse_steps_validation():
     for bad, msg in [
         ([{"id": "a", "prompt": "x"}, {"id": "a", "prompt": "y"}], "double"),
         ([[{"id": "a", "prompt": "x"}, {"id": "b", "prompt": "{{a}}"}]], "ne désigne aucune"),   # même groupe
-        ([{"id": "a", "agent": "claude", "prompt": "x", "sources": "web"}], "réservés à Grok"),
+        ([{"id": "a", "agent": "claude", "prompt": "x", "sources": "web"}], "réservé à Grok"),
+        ([{"id": "a", "agent": "claude", "prompt": "x", "effort": "turbo"}], "effort Claude inconnu"),
+        ([{"id": "a", "agent": "claude", "prompt": "x", "schema": {"x": 1}}], "champ 'type'"),
         ([{"id": "a", "prompt": "x", "effort": "turbo"}], "effort inconnu"),
         ([{"id": "a", "prompt": "x", "temp": 1}], "champs inconnus"),
         ([{"id": f"s{i}", "prompt": "x"} for i in range(9)], "maximum"),
@@ -171,18 +174,21 @@ async def test_workflow_chains_outputs_and_runs_groups_in_parallel(monkeypatch):
 
     async def fake_claude(messages, **kw):
         prompts[messages[-1]["content"]] = kw
-        return f"C[{messages[-1]['content']}]", "claude-test"
+        return ClaudeResult(f"C[{messages[-1]['content']}]", "claude-sonnet-5-5", kw["effort"], 1000, 100)
 
     monkeypatch.setattr(wf_mod, "grok_respond", fake_grok)
-    monkeypatch.setattr(wf_mod, "claude_chat", fake_claude)
+    monkeypatch.setattr(wf_mod, "claude_respond", fake_claude)
     progress = []
     res = await wf_mod.run_workflow(
         [[{"id": "a", "prompt": "A {{input}}", "sources": "web"}, {"id": "b", "prompt": "B"}],
-         {"id": "c", "agent": "claude", "prompt": "{{a}} + {{b}}"}],
+         {"id": "c", "agent": "claude", "prompt": "{{a}} + {{b}}", "effort": "high",
+          "schema": {"type": "object", "properties": {}, "additionalProperties": False}}],
         input="Inde", progress=progress.append)
     assert res.outputs[-1].text == "C[G[A Inde] + G[B]]"
     assert peak == 2 and prompts["A Inde"]["tools"] == [{"type": "web_search"}]
-    assert res.grok_cost > 0 and progress[-1].startswith("terminé")
+    assert prompts["G[A Inde] + G[B]"]["effort"] == "high" and prompts["G[A Inde] + G[B]"]["schema"]
+    # Grok 2 × 0.0026 $ + Claude (1000 × 2 + 100 × 10) / 1M = 0.003 $
+    assert abs(res.cost_usd - (2 * 0.0026 + 0.003)) < 1e-9 and progress[-1].startswith("terminé")
     assert "## Résultat (c, claude)" in wf_mod.format_workflow(res)
 
 
