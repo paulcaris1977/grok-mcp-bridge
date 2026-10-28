@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 from fastmcp import FastMCP
 
-from grok_client import call_grok, get_model_for_task
+from grok_client import call_grok
 from router.router import route, TaskType          # Import explicite
 from context import build_system_prompt
 
@@ -20,18 +20,27 @@ def register_dispatch(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="grok_dispatch",
-        description="Point d'entrée unique vers Grok. Le bridge route automatiquement vers le meilleur handler (critique, code test, research, etc.). Recommandé."
+        description=(
+            "Point d'entrée unique vers Grok. Le bridge route automatiquement vers le meilleur handler "
+            "(critique, code test, research avec recherche web/X, etc.). Recommandé. "
+            "effort = low | medium | high | max (rapidité/coût contre profondeur) ; "
+            "model force un modèle xAI précis."
+        )
     )
     async def grok_dispatch(
         prompt: str,
         task: Optional[str] = None,           # Override manuel : "critique", "code_test", "research", etc.
         session_id: Optional[str] = None,
         temperature: float = 0.7,
+        effort: Optional[str] = None,          # None = défaut du handler (code : high, sinon medium)
+        model: Optional[str] = None,
     ) -> str:
         """
         Point d'entrée principal pour Claude.
         Le router décide automatiquement du meilleur traitement.
         """
+        # Ne transmettre effort/model que s'ils sont fournis : chaque handler garde son défaut
+        tuning = {k: v for k, v in {"effort": effort, "model": model}.items() if v}
         try:
             # ── Décision de routing ─────────────────────────────────────
             decision = route(prompt, explicit_task=task)
@@ -47,7 +56,8 @@ def register_dispatch(mcp: FastMCP) -> None:
                 return await _run_critique(
                     content=prompt,
                     session_id=session_id,
-                    temperature=temperature
+                    temperature=temperature,
+                    **tuning,
                 )
 
             elif decision.task_type == TaskType.CODE_TEST:
@@ -59,6 +69,7 @@ def register_dispatch(mcp: FastMCP) -> None:
                     context="Code envoyé via grok_dispatch",
                     session_id=session_id,
                     temperature=min(temperature, 0.3),   # plus basse pour du code
+                    **tuning,
                 )
 
             elif decision.task_type == TaskType.RESEARCH:
@@ -66,13 +77,13 @@ def register_dispatch(mcp: FastMCP) -> None:
                 return await _run_research(
                     query=prompt,
                     session_id=session_id,
-                    temperature=temperature
+                    temperature=temperature,
+                    **tuning,
                 )
 
             # ── Cas par défaut (question générale) ─────────────────────
             else:
                 system_prompt = build_system_prompt(task_type="dispatch")
-                model = get_model_for_task("fast")
 
                 return await call_grok(
                     prompt=prompt,
@@ -81,6 +92,7 @@ def register_dispatch(mcp: FastMCP) -> None:
                     temperature=temperature,
                     session_id=session_id,
                     use_history=bool(session_id),
+                    effort=effort,
                 )
 
         except Exception as e:

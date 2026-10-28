@@ -1,8 +1,7 @@
 """
 tools/grok_research.py
-Market intelligence via Grok, SANS recherche web pour l'instant : l'appel
-n'active aucun outil de search xAI, Grok répond de ses connaissances.
-La vraie recherche (Responses API, web_search / x_search) arrive en phase 1.
+Recherche web et X en temps réel via les outils serveur xAI (web_search, x_search).
+Les sources citées par xAI sont listées sous la réponse.
 Optimisé pour le secteur tonnellerie/spiritueux et les marchés Taranis.
 """
 
@@ -10,21 +9,15 @@ import logging
 from typing import Optional
 from fastmcp import FastMCP
 
-from grok_client import call_grok, get_model_for_task
+from grok_client import call_grok, search_tools
 from context import build_system_prompt
 
 logger = logging.getLogger("grok-mcp-bridge.research")
 
-_NO_LIVE_SEARCH_NOTICE = (
-    "⚠️ Réponse sans recherche web en direct (connaissances du modèle). "
-    "Chiffres et sources à vérifier avant usage."
-)
-
 _RESEARCH_PROMPT_TEMPLATE = """
-Analyse le sujet suivant à partir de tes connaissances.
-Tu n'as PAS accès au web pendant cette réponse : n'invente aucune source, aucun lien,
-aucun chiffre. Indique la date approximative de tes informations et signale ce qui
-demande une vérification.
+Effectue une recherche sur le sujet suivant, avec les outils de recherche à ta disposition.
+Appuie chaque fait et chaque chiffre sur une source trouvée pendant cette recherche.
+Si tu ne trouves pas une information, dis-le au lieu de l'estimer.
 
 SUJET : {query}
 
@@ -38,7 +31,7 @@ STRUCTURE DE TA RÉPONSE :
 
 ## 🔑 Points essentiels
 
-[Liste des faits importants, avec leur date approximative]
+[Liste des faits importants, datés, avec leur source]
 
 ## 🌍 Implications pour Taranis
 
@@ -51,11 +44,20 @@ STRUCTURE DE TA RÉPONSE :
 ## ⚠️ Risques ou vigilance
 
 [Éléments à surveiller]
-
-## 📚 À vérifier
-
-[Points à confirmer par une source publique ou par Taranis (Odoo, Marc)]
 """.strip()
+
+# Effort low : réponse courte, sans la structure en 5 rubriques
+_QUICK_PROMPT_TEMPLATE = """
+Recherche rapide, réponse courte et directe (quelques phrases), sources à l'appui.
+Si tu ne trouves pas l'information, dis-le.
+
+SUJET : {query}
+
+{market_section}
+""".strip()
+
+# Compatibilité : l'ancien paramètre depth se traduit en effort
+_DEPTH_TO_EFFORT = {"quick": "low", "standard": "medium", "deep": "high"}
 
 
 def register_research(mcp: FastMCP) -> None:
@@ -67,30 +69,40 @@ def register_research(mcp: FastMCP) -> None:
         market: Optional[str] = None,
         depth: str = "standard",
         session_id: Optional[str] = None,
+        effort: Optional[str] = None,
+        sources: str = "web+x",
+        model: Optional[str] = None,
     ) -> str:
         """
-        Analyse de marché via Grok. PAS de recherche web en direct pour l'instant :
-        réponse issue des connaissances du modèle, à vérifier.
+        Recherche web et X en temps réel via Grok, avec sources citées.
 
         Idéal pour : veille concurrentielle, prix marché, actualités distilleries,
-        tendances spiritueux, informations sur des clients potentiels.
-        
+        tendances spiritueux, informations sur des clients potentiels,
+        ce qui se dit sur X d'une marque ou d'un sujet.
+
         Args:
             query: Sujet à rechercher.
             market: Marché cible pour contextualiser (Japan, Korea, Scotland,
-                    Ireland, France, LATAM, India).
-            depth: Niveau de profondeur : 'quick' (résumé rapide) | 'standard' |
-                   'deep' (analyse exhaustive).
+                    Ireland, France, LATAM, India, Georgia, China).
+            depth: Ancien réglage, conservé : quick | standard | deep
+                   (= effort low | medium | high). Ignoré si effort est donné.
             session_id: ID de session pour suivi de recherche multi-turns.
-        
+            effort: low | medium | high | max. Règle modèle, profondeur de
+                    raisonnement, nombre de recherches et longueur.
+            sources: web | x | web+x (défaut web+x).
+            model: Force un modèle xAI précis (ex. grok-4.7) au lieu du profil.
+
         Returns:
-            Rapport structuré avec implications Taranis et sources.
+            Rapport structuré avec implications Taranis, sources et coût estimé.
         """
         return await _run_research(
             query,
             market=market,
             depth=depth,
             session_id=session_id,
+            effort=effort,
+            sources=sources,
+            model=model,
         )
 
 
@@ -100,38 +112,33 @@ async def _run_research(
     depth: str = "standard",
     session_id: Optional[str] = None,
     temperature: float = 0.5,
+    effort: Optional[str] = None,
+    sources: str = "web+x",
+    model: Optional[str] = None,
 ) -> str:
     """Implémentation interne, appelable depuis grok_dispatch."""
+    effort = effort or _DEPTH_TO_EFFORT.get(depth, "medium")
+
     market_section = ""
     if market:
         market_section = f"MARCHÉ CIBLE : {market}\nAdapte l'analyse aux spécificités de ce marché.\n"
 
-    # Ajuste les tokens selon la profondeur
-    token_map = {"quick": 1024, "standard": 2048, "deep": 4096}
-    max_tokens = token_map.get(depth, 2048)
-
-    # Ajuste la température pour les recherches rapides
-    temp = 0.3 if depth == "quick" else temperature
-
+    template = _QUICK_PROMPT_TEMPLATE if effort == "low" else _RESEARCH_PROMPT_TEMPLATE
+    prompt = template.format(query=query, market_section=market_section)
     system_prompt = build_system_prompt(task_type="research")
-    prompt = _RESEARCH_PROMPT_TEMPLATE.format(
-        query=query,
-        market_section=market_section,
-    )
-    model = get_model_for_task("research")
 
     logger.info(
-        f"Running research | model={model} | depth={depth} | "
-        f"market={market or 'all'} | query_len={len(query)}"
+        f"Running research | effort={effort} | sources={sources} | "
+        f"model={model or 'profil'} | market={market or 'all'} | query_len={len(query)}"
     )
 
-    result = await call_grok(
+    return await call_grok(
         prompt=prompt,
         system_prompt=system_prompt,
         model=model,
-        temperature=temp,
-        max_tokens=max_tokens,
+        temperature=temperature,
         session_id=session_id,
         use_history=bool(session_id),
+        effort=effort,
+        tools=search_tools(sources),
     )
-    return f"{_NO_LIVE_SEARCH_NOTICE}\n\n{result}"

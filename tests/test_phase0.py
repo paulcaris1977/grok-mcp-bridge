@@ -1,5 +1,5 @@
 """
-Tests phase 0 : routage dispatch → handlers, avertissement research,
+Tests phase 0 : routage dispatch → handlers, outils de recherche,
 contexte Taranis chargé depuis fichier, garde Bearer.
 Aucun appel réseau : call_grok est remplacé par un faux.
 """
@@ -44,10 +44,11 @@ async def test_dispatch_critique_reaches_handler(fake_grok):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_research_reaches_handler_with_notice(fake_grok):
+async def test_dispatch_research_reaches_handler_with_search_tools(fake_grok):
     text = await _dispatch("Prix des fûts bourbon en Écosse", "research")
-    assert text.startswith("⚠️ Réponse sans recherche web")
+    assert text == "OK"
     assert "Prix des fûts bourbon en Écosse" in fake_grok[0]["prompt"]
+    assert [t["type"] for t in fake_grok[0]["tools"]] == ["web_search", "x_search"]
 
 
 @pytest.mark.asyncio
