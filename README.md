@@ -57,7 +57,8 @@ main.py                          ← Serveur FastMCP + enregistrement des tools
 | `grok_vision` | Analyse d'images (fût, défaut, étiquette, fiche technique) : URL ou data URI JPEG/PNG |
 | `grok_workflow` | Chaîne d'étapes Grok / Claude en JSON, avec groupes parallèles et `{{id}}` (voir plus bas) |
 | `grok_start_job`, `grok_get_job`, `grok_list_jobs` | Travaux longs en arrière-plan : research, verify, cross_check, debate, workflow |
-| `ask_claude`, `save_project_note`, `get_project_notes` | Mémoire de projet partagée |
+| `ask_claude` | Claude avec le contexte Taranis : notes de projet (`project`), session suivie (`session_id`), `effort`, sortie JSON (`schema`), coût estimé |
+| `save_project_note`, `get_project_notes` | Mémoire de projet partagée entre Grok et Claude |
 
 Tous les tools Grok acceptent `effort` et `model` :
 
@@ -69,6 +70,8 @@ Tous les tools Grok acceptent `effort` et `model` :
 | `max` | grok-4.7 | xhigh | 16 000 | 10 tours | 300 s |
 
 `model="grok-4.6"` force un modèle précis. Chaque réponse se termine par une ligne `modèle · effort · tokens · outils · ≈ coût $` (estimation, pas la facture xAI).
+
+Côté Claude (`ask_claude`, étapes Claude du workflow, contrôle de `grok_verify` et `grok_cross_check`), `effort` = `low | medium | high | xhigh | max` règle le raisonnement adaptatif de Claude, et la même ligne de coût s'affiche. La température n'est plus envoyée : Claude Sonnet 5.5 la refuse. En cas de refus de sécurité, l'API rejoue la demande sur un modèle de repli (`fallbacks: "default"`).
 
 ---
 
@@ -85,6 +88,7 @@ grok_workflow(input="Corée", steps=[
 ```
 
 Une liste dans `steps` = étapes lancées en parallèle. `{{id}}` ne peut viser qu'un groupe précédent. 8 étapes max.
+`effort` et `schema` valent pour les deux agents ; `sources` (recherche web / X) reste réservé à Grok.
 Par défaut le workflow tourne en arrière-plan et renvoie un `job_id` ; `grok_get_job(job_id, wait_s=50)` attend jusqu'à 50 s le résultat.
 
 Un redéploiement interrompt les tâches en cours (statut `interrupted`). Sans volume Railway, notes, historique et résultats sont aussi perdus.
@@ -112,6 +116,9 @@ Variables clés dans `.env` :
 | `MCP_BEARER_TOKEN` | — | Si défini, `/mcp` exige `Authorization: Bearer <token>` (401 sinon). Absent = ouvert, warning au boot |
 | `DATA_DIR` | volume Railway, sinon `/data` | Dossier de la base SQLite `bridge.sqlite3` |
 | `GROK_VISION_MODEL` | `GROK_MODEL_MAIN` | Modèle de `grok_vision`, quel que soit l'effort |
+| `CLAUDE_MODEL` | `claude-sonnet-5-5` | Modèle Claude (une valeur fixée sur Railway prime sur ce défaut) |
+| `CLAUDE_DEFAULT_EFFORT` | `medium` | Effort Claude quand l'appelant n'en donne pas |
+| `CLAUDE_FALLBACK_MODELS` | `claude-sonnet-5-5,claude-opus-5-5,…` | Modèles pour lesquels le repli serveur est demandé |
 | `JOB_TIMEOUT_S` / `JOB_CONCURRENCY` | `900` / `3` | Durée max d'une tâche de fond / tâches simultanées |
 | `JOB_RETENTION_DAYS` | `14` | Purge des tâches anciennes au démarrage |
 | `TARANIS_CONTEXT_PATH` | `context/taranis_context.md` | Contexte métier injecté ; pointer vers un volume pour le modifier sans redéployer |
