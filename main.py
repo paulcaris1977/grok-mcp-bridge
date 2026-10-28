@@ -15,6 +15,7 @@ from tools.grok_debate import register_debate
 from tools.ask_claude import register_ask_claude
 from tools.project_memory import register_project_memory
 from config import validate_api_keys
+from auth import protect
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,7 +41,7 @@ logger.info(
 )
 
 # App ASGI exposée au niveau module : Railway démarre via `uvicorn main:app`
-app = mcp.http_app(path="/mcp", transport="streamable-http")
+app = protect(mcp.http_app(path="/mcp", transport="streamable-http"))
 
 if __name__ == "__main__":
     import uvicorn

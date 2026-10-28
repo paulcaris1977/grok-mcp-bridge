@@ -5,35 +5,29 @@ Injecte le contexte métier précis de Taranis Cooperage Group dans chaque appel
 
 from __future__ import annotations
 import logging
+import os
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("grok-mcp-bridge.context")
 
 # ── Contexte de base (toujours injecté) ──────────────────────────────────────
-_BASE_CONTEXT = """
-Tu es un assistant expert au service de **Taranis Cooperage Group**, un groupe international spécialisé dans la **tonnellerie** (fabrication et régénération de fûts en chêne).
+# Chargé depuis un fichier Markdown pour être corrigé sans toucher au code.
+# TARANIS_CONTEXT_PATH permet de pointer vers une copie sur volume Railway.
+_DEFAULT_CONTEXT_PATH = Path(__file__).with_name("taranis_context.md")
 
-**Positionnement métier :**
-- Nous sommes **producteurs de fûts** (barriques neuves et régénérées), pas des producteurs de spiritueux ni des négociants en vrac.
-- Notre activité est fortement corrélée à la santé de l'industrie des **spiritueux vieillis** (whisky, bourbon, scotch, whiskey irlandais, etc.) car elle conditionne la demande en fûts de qualité.
 
-**Entités du groupe :**
-• B'Oak (France & international) — fûts premium, fûts régénérés, extraits de chêne
-• Dair'nua Cooperage (Irlande) — fûts spécialisés pour whiskeys irlandais
-• Alba Cooperage (Écosse) — fûts pour distilleries écossaises
-• Querceo — solutions techniques et trading de composants bois
+def _load_base_context() -> str:
+    override = os.environ.get("TARANIS_CONTEXT_PATH", "").strip()
+    if override:
+        try:
+            return Path(override).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logger.warning("TARANIS_CONTEXT_PATH illisible (%s), contexte du repo utilisé", exc)
+    return _DEFAULT_CONTEXT_PATH.read_text(encoding="utf-8").strip()
 
-**Marchés prioritaires :** Japon · Corée · Écosse · Irlande · France · LATAM · Inde
 
-**Clients clés :** Diageo, Bacardi, Bushmills, Pernod Ricard, William Grant & Sons, etc.
-
-**Domaines d'expertise :** 
-- Chimie du chêne (ellagitannins, whiskylactones, lignine, vanilline)
-- Maturation des spiritueux en fûts
-- Logistique internationale de fûts
-- Gestion ERP Odoo
-- Automatisation et outils MCP (Claude + Grok)
-""".strip()
+_BASE_CONTEXT = _load_base_context()
 
 # ── Contextes additionnels par type de tâche ─────────────────────────────────
 _CRITIQUE_EXTRA = """
@@ -103,6 +97,6 @@ def get_context_summary() -> dict:
     return {
         "group": "Taranis Cooperage Group",
         "activity": "Tonnellerie (fabrication de fûts)",
-        "markets": ["Japan", "Korea", "Scotland", "Ireland", "France", "LATAM", "India"],
+        "markets": ["Japan", "Korea", "Scotland", "Ireland", "France", "LATAM", "India", "Georgia", "China"],
         "base_prompt_chars": len(_BASE_CONTEXT),
     }
