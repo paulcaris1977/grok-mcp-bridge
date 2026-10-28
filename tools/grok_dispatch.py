@@ -45,7 +45,7 @@ def register_dispatch(mcp: FastMCP) -> None:
             if decision.task_type == TaskType.CRITIQUE:
                 from tools.grok_critique import _run_critique
                 return await _run_critique(
-                    prompt=prompt,
+                    content=prompt,
                     session_id=session_id,
                     temperature=temperature
                 )
@@ -64,7 +64,7 @@ def register_dispatch(mcp: FastMCP) -> None:
             elif decision.task_type == TaskType.RESEARCH:
                 from tools.grok_research import _run_research
                 return await _run_research(
-                    prompt=prompt,
+                    query=prompt,
                     session_id=session_id,
                     temperature=temperature
                 )
@@ -86,12 +86,5 @@ def register_dispatch(mcp: FastMCP) -> None:
         except Exception as e:
             logger.error(f"Error in grok_dispatch: {e}", exc_info=True)
 
-            # Fallback de sécurité
-            system_prompt = build_system_prompt(task_type="dispatch")
-            return await call_grok(
-                prompt=f"[DISPATCH ERROR] {prompt}\n\nError: {str(e)}",
-                system_prompt=system_prompt + "\n\nL'utilisateur a rencontré une erreur de routing. Réponds normalement.",
-                model=get_model_for_task("fast"),
-                temperature=0.7,
-                session_id=session_id,
-            )
+            # Pas de second appel Grok : il masquait l'erreur et doublait le coût
+            return f"❌ Erreur grok_dispatch ({type(e).__name__}) : {e}"

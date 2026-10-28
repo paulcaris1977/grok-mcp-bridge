@@ -1,6 +1,8 @@
 """
 tools/grok_research.py
-Recherche web et market intelligence via Grok avec Live Search.
+Market intelligence via Grok, SANS recherche web pour l'instant : l'appel
+n'active aucun outil de search xAI, Grok répond de ses connaissances.
+La vraie recherche (Responses API, web_search / x_search) arrive en phase 1.
 Optimisé pour le secteur tonnellerie/spiritueux et les marchés Taranis.
 """
 
@@ -13,8 +15,16 @@ from context import build_system_prompt
 
 logger = logging.getLogger("grok-mcp-bridge.research")
 
+_NO_LIVE_SEARCH_NOTICE = (
+    "⚠️ Réponse sans recherche web en direct (connaissances du modèle). "
+    "Chiffres et sources à vérifier avant usage."
+)
+
 _RESEARCH_PROMPT_TEMPLATE = """
-Effectue une recherche approfondie sur le sujet suivant.
+Analyse le sujet suivant à partir de tes connaissances.
+Tu n'as PAS accès au web pendant cette réponse : n'invente aucune source, aucun lien,
+aucun chiffre. Indique la date approximative de tes informations et signale ce qui
+demande une vérification.
 
 SUJET : {query}
 
@@ -28,7 +38,7 @@ STRUCTURE DE TA RÉPONSE :
 
 ## 🔑 Points essentiels
 
-[Liste des faits importants avec sources et dates quand disponibles]
+[Liste des faits importants, avec leur date approximative]
 
 ## 🌍 Implications pour Taranis
 
@@ -42,9 +52,9 @@ STRUCTURE DE TA RÉPONSE :
 
 [Éléments à surveiller]
 
-## 📚 Sources
+## 📚 À vérifier
 
-[Liens ou références utilisées]
+[Points à confirmer par une source publique ou par Taranis (Odoo, Marc)]
 """.strip()
 
 
@@ -59,8 +69,9 @@ def register_research(mcp: FastMCP) -> None:
         session_id: Optional[str] = None,
     ) -> str:
         """
-        Recherche web et analyse de marché via Grok avec accès temps réel.
-        
+        Analyse de marché via Grok. PAS de recherche web en direct pour l'instant :
+        réponse issue des connaissances du modèle, à vérifier.
+
         Idéal pour : veille concurrentielle, prix marché, actualités distilleries,
         tendances spiritueux, informations sur des clients potentiels.
         
@@ -114,7 +125,7 @@ async def _run_research(
         f"market={market or 'all'} | query_len={len(query)}"
     )
 
-    return await call_grok(
+    result = await call_grok(
         prompt=prompt,
         system_prompt=system_prompt,
         model=model,
@@ -123,3 +134,4 @@ async def _run_research(
         session_id=session_id,
         use_history=bool(session_id),
     )
+    return f"{_NO_LIVE_SEARCH_NOTICE}\n\n{result}"

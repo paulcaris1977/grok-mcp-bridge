@@ -71,6 +71,12 @@ Variables clés dans `.env` :
 | `GROK_SMART_MODEL` | `grok-3` | Critique, research, code |
 | `GROK_FAST_MODEL` | `grok-3-mini` | Dispatch générique |
 | `PORT` | `8000` | Fixé automatiquement par Railway |
+| `MCP_BEARER_TOKEN` | — | Si défini, `/mcp` exige `Authorization: Bearer <token>` (401 sinon). Absent = ouvert, warning au boot |
+| `TARANIS_CONTEXT_PATH` | `context/taranis_context.md` | Contexte métier injecté ; pointer vers un volume pour le modifier sans redéployer |
+
+> `grok_research` n'active pas encore de recherche web : la réponse vient des connaissances du modèle et commence par un avertissement. La recherche réelle (Responses API `web_search` / `x_search`) est prévue en phase 1.
+
+Tests : `pip install -r requirements-dev.txt && python -m pytest tests`
 
 ---
 
