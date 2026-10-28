@@ -21,7 +21,11 @@ SUJET / CONTENU À ANALYSER :
 
 {focus_instruction}
 
-**RÉPONDS EXCLUSIVEMENT avec cette structure :**
+Règles prioritaires sur la structure ci-dessous :
+- Si la demande fixe une longueur ou un nombre de points, respecte-la : réduis ou supprime des rubriques.
+- Critique ce qui est écrit, pas ce que tu supposes : n'attribue au contenu aucun élément qu'il ne contient pas.
+
+**Structure par défaut :**
 
 ## 🔍 Synthèse
 (Résumé court de ce qui est analysé)

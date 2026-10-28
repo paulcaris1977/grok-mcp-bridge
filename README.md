@@ -1,29 +1,25 @@
-# Grok MCP Bridge v2.0
+# Grok MCP Bridge v3
 
 Bridge de production reliant **Claude ↔ Grok (xAI)**, déployé sur Railway.
 
 ## Pourquoi ce bridge ?
 
-Claude est excellent pour raisonner et structurer. Grok apporte la **recherche web temps réel**, une **critique directe sans filtre**, et une forte capacité sur le code. Ce bridge donne accès aux deux depuis un seul point d'entrée MCP — avec le contexte métier Taranis Cooperage injecté automatiquement à chaque appel.
+Claude est excellent pour raisonner et structurer. Grok apporte la **recherche web et X en temps réel**, une **critique directe sans filtre**, et une forte capacité sur le code. Ce bridge donne accès aux deux depuis un seul point d'entrée MCP — avec le contexte métier Taranis Cooperage injecté automatiquement à chaque appel.
 
 ---
 
-## Un seul tool à retenir : `grok_dispatch`
+## Point d'entrée : `grok_dispatch`
+
+Plus de routage par mots-clés : l'appelant choisit le `mode`.
 
 ```
-grok_dispatch(prompt="ta question ou instruction")
+grok_dispatch(prompt="Prix marché des fûts bourbon en Écosse", mode="research")
+grok_dispatch(prompt="Critique ce plan commercial Japon", mode="critique", effort="high")
+grok_dispatch(prompt="Corrige cette erreur : TypeError...", mode="code")
+grok_dispatch(prompt="Qu'est-ce qu'un fût STR ?")           # mode general par défaut
 ```
 
-Le router analyse le prompt et choisit automatiquement le bon handler. Dans 80% des cas, c'est tout ce dont tu as besoin.
-
-```
-# Exemples — tout passe par grok_dispatch
-grok_dispatch(prompt="Recherche les prix marché des fûts bourbon en Écosse 2026")
-grok_dispatch(prompt="Critique ce plan commercial pour le marché japonais")
-grok_dispatch(prompt="Corrige cette erreur Python Railway : TypeError...")
-```
-
-Override manuel si besoin : `grok_dispatch(prompt="...", task="critique")`
+`task` (ancien nom) reste accepté : `review`, `code_test`, `search`, `market`… sont traduits.
 
 ---
 
@@ -31,15 +27,13 @@ Override manuel si besoin : `grok_dispatch(prompt="...", task="critique")`
 
 ```
 main.py                          ← Serveur FastMCP + enregistrement des tools
-├── router/router.py             ← Cerveau : routing intelligent
-├── tools/
-│   ├── grok_dispatch.py         ← Point d'entrée unique recommandé
-│   ├── grok_critique.py         ← Analyse critique sans filtre
-│   ├── grok_code_test.py        ← Debug, correction et optimisation de code
-│   └── grok_research.py         ← Recherche web + market intelligence
-├── grok_client.py               ← Client Grok (retry, quota, historique)
-├── utils/json_parser.py         ← Parsing JSON robuste
-└── context/taranis_context.py   ← Contexte métier Taranis injecté automatiquement
+├── auth.py                      ← Garde Bearer optionnelle (MCP_BEARER_TOKEN)
+├── grok_client.py               ← Client unique Grok (Responses API, profils d'effort, coût)
+├── llm_clients.py               ← grok_chat (debate) + claude_chat (Anthropic)
+├── orchestration.py             ← verify, cross_check, débat
+├── router/router.py             ← Validation du mode de grok_dispatch
+├── tools/                       ← Un fichier par tool MCP
+└── context/taranis_context.md   ← Contexte métier injecté (vocabulaire maison compris)
 ```
 
 ---
@@ -48,10 +42,16 @@ main.py                          ← Serveur FastMCP + enregistrement des tools
 
 | Tool | Quand l'appeler directement |
 |------|-----------------------------|
-| `grok_dispatch` | **Toujours — point d'entrée principal** |
+| `grok_dispatch` | Point d'entrée principal, avec `mode` |
 | `grok_critique` | Revue approfondie avec `focus=` précis (ex: "risque Corée") |
 | `grok_code_test` | Debug itératif avec `session_id` + `error_message` |
 | `grok_research` | Recherche web + X en direct (`sources="web" | "x" | "web+x"`), sources citées |
+| `grok_verify` | Recherche Grok **puis contrôle par Claude** de chaque chiffre (✅ / ⚠️ / ❌) — quand les chiffres vont servir |
+| `grok_cross_check` | Même question à Grok et Claude en parallèle, puis comparaison par un arbitre (`judge`) |
+| `grok_debate` | Débat : tours en parallèle, arrêt dès accord, synthèse par l'arbitre (`judge`, `turns` 1-4) |
+| `grok_x_pulse` | Ce qui se dit sur X d'une marque / d'un sujet (`days`, `handles`) |
+| `grok_structured` | Réponse JSON conforme à un JSON Schema → `{data, meta}` |
+| `ask_claude`, `save_project_note`, `get_project_notes` | Mémoire de projet partagée |
 
 Tous les tools Grok acceptent `effort` et `model` :
 

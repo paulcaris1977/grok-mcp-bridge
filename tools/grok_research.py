@@ -106,6 +106,16 @@ def register_research(mcp: FastMCP) -> None:
         )
 
 
+def research_prompts(query: str, market: Optional[str], effort: str) -> tuple[str, str]:
+    """(system, prompt) d'une recherche — réutilisé par grok_verify."""
+    market_section = ""
+    if market:
+        market_section = f"MARCHÉ CIBLE : {market}\nAdapte l'analyse aux spécificités de ce marché.\n"
+    template = _QUICK_PROMPT_TEMPLATE if effort == "low" else _RESEARCH_PROMPT_TEMPLATE
+    prompt = template.format(query=query, market_section=market_section)
+    return build_system_prompt(task_type="research"), prompt
+
+
 async def _run_research(
     query: str,
     market: Optional[str] = None,
@@ -118,14 +128,7 @@ async def _run_research(
 ) -> str:
     """Implémentation interne, appelable depuis grok_dispatch."""
     effort = effort or _DEPTH_TO_EFFORT.get(depth, "medium")
-
-    market_section = ""
-    if market:
-        market_section = f"MARCHÉ CIBLE : {market}\nAdapte l'analyse aux spécificités de ce marché.\n"
-
-    template = _QUICK_PROMPT_TEMPLATE if effort == "low" else _RESEARCH_PROMPT_TEMPLATE
-    prompt = template.format(query=query, market_section=market_section)
-    system_prompt = build_system_prompt(task_type="research")
+    system_prompt, prompt = research_prompts(query, market, effort)
 
     logger.info(
         f"Running research | effort={effort} | sources={sources} | "

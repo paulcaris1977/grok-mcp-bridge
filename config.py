@@ -53,7 +53,7 @@ CLAUDE_MODEL      = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 DEBATE_MAX_TURNS      = int(os.environ.get("DEBATE_MAX_TURNS", "2"))       # réduit à 2 (Railway timeout)
 DEBATE_MAX_TOKENS     = int(os.environ.get("DEBATE_MAX_TOKENS", "1024"))    # tokens/réponse par tour
 DEBATE_HISTORY_KEEP   = int(os.environ.get("DEBATE_HISTORY_KEEP", "4"))     # nb messages récents à garder
-DEBATE_TIMEOUT_S      = float(os.environ.get("DEBATE_TIMEOUT_S", "90.0"))   # timeout global debate
+DEBATE_TIMEOUT_S      = float(os.environ.get("DEBATE_TIMEOUT_S", "150.0"))  # timeout global debate (tours en parallèle + synthèse)
 DEBATE_MAX_TOTAL_TOKENS = int(os.environ.get("DEBATE_MAX_TOTAL_TOKENS", "8000"))  # plafond tokens cumulés/session
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
