@@ -20,6 +20,8 @@ from typing import Any, Optional
 
 import httpx
 
+import store
+
 from config import (
     XAI_API_KEY, GROK_BASE_URL,
     EFFORT_PROFILES, DEFAULT_EFFORT, EFFORT_CAPABLE_MODELS, REASONING_MODELS,
@@ -30,9 +32,6 @@ logger = logging.getLogger("grok-mcp-bridge.client")
 
 MAX_RETRIES = int(os.environ.get("GROK_MAX_RETRIES", "1"))   # 1 retry = 2 tentatives max
 
-# Historique par session (mémoire du process, perdu au redéploiement — phase 3)
-_history: dict[str, list[dict]] = {}
-_HISTORY_KEEP = 30
 
 Message = dict[str, Any]
 
@@ -105,6 +104,7 @@ def build_payload(
     max_output_tokens: Optional[int] = None,
     tools: Optional[list[dict]] = None,
     text_format: Optional[dict] = None,
+    store: Optional[bool] = None,
 ) -> dict[str, Any]:
     profile = EFFORT_PROFILES[effort]
     selected = model or profile["model"]
@@ -125,6 +125,9 @@ def build_payload(
         if tools:
             # Les marqueurs [[n]](url) insérés dans le texte casseraient le JSON
             payload["include"] = ["no_inline_citations"]
+    if store is not None:
+        # Doc xAI : le stockage côté serveur peut faire échouer les requêtes avec images
+        payload["store"] = store
     return payload
 
 
@@ -181,12 +184,13 @@ async def grok_respond(
     tools: Optional[list[dict]] = None,
     timeout_s: Optional[float] = None,
     text_format: Optional[dict] = None,
+    store: Optional[bool] = None,
 ) -> GrokResult:
     """Appel bas niveau : messages → GrokResult. Relance sur 429 / 5xx / réseau."""
     if not XAI_API_KEY:
         raise ValueError("XAI_API_KEY is not set in environment variables.")
     effort = resolve_effort(effort)
-    payload = build_payload(messages, effort, model, temperature, max_output_tokens, tools, text_format)
+    payload = build_payload(messages, effort, model, temperature, max_output_tokens, tools, text_format, store)
     budget = timeout_s or EFFORT_PROFILES[effort]["timeout_s"]
     deadline = time.monotonic() + budget
     headers = {"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"}
@@ -235,8 +239,8 @@ async def call_grok(
     messages: list[Message] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    if use_history and session_id and session_id in _history:
-        messages.extend(_history[session_id])
+    if use_history and session_id:
+        messages.extend(store.get_history(session_id))
     messages.append({"role": "user", "content": prompt})
 
     result = await grok_respond(
@@ -244,15 +248,13 @@ async def call_grok(
         max_output_tokens=max_tokens, tools=tools)
 
     if use_history and session_id:
-        hist = _history.setdefault(session_id, [])
-        hist.append({"role": "user", "content": prompt})
-        hist.append({"role": "assistant", "content": result.text})
-        _history[session_id] = hist[-_HISTORY_KEEP:]
+        store.append_history(session_id, [{"role": "user", "content": prompt},
+                                          {"role": "assistant", "content": result.text}])
 
     return result.render(footer=footer)
 
 
 def clear_history(session_id: str) -> None:
     """Vide l'historique d'une session."""
-    _history.pop(session_id, None)
+    store.clear_history(session_id)
     logger.info(f"History cleared for session={session_id}")

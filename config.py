@@ -25,6 +25,8 @@ EFFORT_PROFILES: dict[str, dict] = {
     "max":    {"model": GROK_MODEL_MAIN, "reasoning": "xhigh",  "max_output_tokens": 16000, "max_turns": 10, "timeout_s": 300.0},
 }
 DEFAULT_EFFORT = os.environ.get("GROK_DEFAULT_EFFORT", "medium")
+# grok_vision : modèle fixe quel que soit l'effort (la doc xAI ne garantit l'image que sur grok-4.7)
+GROK_VISION_MODEL = os.environ.get("GROK_VISION_MODEL", GROK_MODEL_MAIN)
 
 # Modèles qui acceptent reasoning.effort (doc xAI : 4.5 → low/medium/high, xhigh traité comme high)
 EFFORT_CAPABLE_MODELS = {m.strip() for m in os.environ.get(
